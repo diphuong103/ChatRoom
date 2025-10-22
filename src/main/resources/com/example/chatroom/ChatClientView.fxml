@@ -6,7 +6,7 @@
 <?import javafx.scene.text.Font?>
 
 <BorderPane xmlns="http://javafx.com/javafx/17" xmlns:fx="http://javafx.com/fxml/1"
-            fx:controller="com.example.chatroom.ChatClientController" prefHeight="650.0" prefWidth="900.0">
+            fx:controller="com.example.chatroom.ChatClientController" prefHeight="700.0" prefWidth="1000.0">
 
     <!-- Header -->
     <top>
@@ -50,27 +50,22 @@
                     </font>
                 </RadioButton>
                 <Separator orientation="VERTICAL"/>
-<!--                <Label text="Thành viên nhóm:" textFill="WHITE">-->
-<!--                    <font>-->
-<!--                        <Font size="12.0" />-->
-<!--                    </font>-->
-<!--                </Label>-->
-<!--                <TextField fx:id="txtGroupMembers" promptText="user1,user2,user3..."-->
-<!--                           style="-fx-font-size: 12px;" prefWidth="200"/>-->
 
-                <Label text="Chọn thành viên nhóm:" textFill="WHITE">
-                    <font>
-                        <Font size="12.0" />
-                    </font>
-                </Label>
-                <ListView fx:id="listGroupMembers" prefHeight="80" prefWidth="200"
-                          style="-fx-font-size: 12px; -fx-background-radius: 5;" />
-
+                <Button fx:id="btnCreateGroup" text="➕ Tạo nhóm" onAction="#handleCreateGroup"
+                        style="-fx-background-color: #4CAF50; -fx-text-fill: white; -fx-font-weight: bold;"/>
+                <Button fx:id="btnManageGroups" text="⚙️ Quản lý nhóm" onAction="#handleManageGroups"
+                        style="-fx-background-color: #FF9800; -fx-text-fill: white; -fx-font-weight: bold;"/>
             </HBox>
 
             <Label fx:id="lblCurrentChat" text="Chế độ: Chat công khai" textFill="WHITE">
                 <font>
                     <Font name="System Bold" size="13.0" />
+                </font>
+            </Label>
+
+            <Label fx:id="lblGroupInfo" text="" textFill="WHITE">
+                <font>
+                    <Font size="12.0" />
                 </font>
             </Label>
         </VBox>
@@ -98,28 +93,69 @@
         </VBox>
     </center>
 
-    <!-- Right - Online Users List -->
+    <!-- Right - Sidebar -->
     <right>
-        <VBox spacing="10" style="-fx-padding: 10; -fx-background-color: #f0f0f0;"
-              prefWidth="220">
-            <Label text="👥 Người dùng online:">
-                <font>
-                    <Font name="System Bold" size="14.0" />
-                </font>
-            </Label>
-            <Label text="(Double-click để chat riêng)" style="-fx-text-fill: #666;">
-                <font>
-                    <Font size="11.0" />
-                </font>
-            </Label>
-            <ListView fx:id="listOnlineUsers" VBox.vgrow="ALWAYS"
-                      style="-fx-font-size: 13px;"/>
+        <VBox spacing="10" style="-fx-padding: 10; -fx-background-color: #f0f0f0;" prefWidth="250">
 
+            <!-- Online Users -->
+            <VBox spacing="5">
+                <Label text="👥 Người dùng online:">
+                    <font>
+                        <Font name="System Bold" size="14.0" />
+                    </font>
+                </Label>
+                <Label text="(Double-click để chat riêng)" style="-fx-text-fill: #666;">
+                    <font>
+                        <Font size="11.0" />
+                    </font>
+                </Label>
+                <ListView fx:id="listOnlineUsers" prefHeight="150" style="-fx-font-size: 13px;"/>
+            </VBox>
+
+            <Separator/>
+
+            <!-- My Groups -->
+            <VBox spacing="5">
+                <Label text="📁 Nhóm của tôi:">
+                    <font>
+                        <Font name="System Bold" size="14.0" />
+                    </font>
+                </Label>
+                <Label text="(Double-click để chọn nhóm)" style="-fx-text-fill: #666;">
+                    <font>
+                        <Font size="11.0" />
+                    </font>
+                </Label>
+                <ListView fx:id="listMyGroups" prefHeight="120" style="-fx-font-size: 13px;"/>
+            </VBox>
+
+            <Separator/>
+
+            <!-- Group Members Selection -->
+            <VBox spacing="5">
+                <Label text="✓ Chọn thành viên tạm thời:">
+                    <font>
+                        <Font size="12.0" />
+                    </font>
+                </Label>
+                <Label text="(Giữ CTRL để chọn nhiều)" style="-fx-text-fill: #666;">
+                    <font>
+                        <Font size="10.0" />
+                    </font>
+                </Label>
+                <ListView fx:id="listGroupMembers" prefHeight="100" style="-fx-font-size: 12px;"/>
+            </VBox>
+
+            <Separator/>
+
+            <!-- Instructions -->
             <VBox spacing="5" style="-fx-background-color: #e0e0e0; -fx-padding: 10; -fx-background-radius: 5;">
-                <Label text="Hướng dẫn:" style="-fx-font-weight: bold;"/>
-                <Label text="• * : Chat tất cả" style="-fx-font-size: 11px;"/>
-                <Label text="• IP: Chọn user rồi chọn Riêng tư" style="-fx-font-size: 11px;"/>
-                <Label text="• Group: Nhập tên thành viên" style="-fx-font-size: 11px;"/>
+                <Label text="📖 Hướng dẫn:" style="-fx-font-weight: bold; -fx-font-size: 12px;"/>
+                <Label text="• *: Chat công khai" style="-fx-font-size: 10px;"/>
+                <Label text="• IP: Double-click user" style="-fx-font-size: 10px;"/>
+                <Label text="• Group: Tạo/chọn nhóm" style="-fx-font-size: 10px;"/>
+                <Label text="• Tạo nhóm: Lưu thành viên" style="-fx-font-size: 10px;"/>
+                <Label text="• Quản lý: Sửa nhóm" style="-fx-font-size: 10px;"/>
             </VBox>
         </VBox>
     </right>
