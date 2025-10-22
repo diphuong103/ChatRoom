@@ -68,8 +68,8 @@ public class ChatClientController {
     private String selectedUser = null;
     private String currentGroup = null;
 
-    // Lưu trữ thông tin các nhóm: tên nhóm -> danh sách thành viên
-    private Map<String, List<String>> myGroups = new HashMap<>();
+    // Lưu trữ thông tin các nhóm từ server: tên nhóm -> GroupData
+    private Map<String, GroupData> myGroups = new HashMap<>();
 
     @FXML
     public void initialize() {
@@ -212,21 +212,11 @@ public class ChatClientController {
                 return;
             }
 
-            if (myGroups.containsKey(groupName)) {
-                showAlert("Lỗi", "Tên nhóm đã tồn tại!");
-                return;
-            }
+            // Gửi yêu cầu tạo nhóm đến server
+            String members = String.join(",", selectedMembers);
+            writer.println("CREATE_GROUP:" + groupName + ":" + members);
 
-            // Tạo nhóm mới
-            myGroups.put(groupName, selectedMembers);
-            updateGroupList();
-
-            currentGroup = groupName;
-            rbGroup.setSelected(true);
-            handleGroupMode();
-
-            appendMessage(">>> Đã tạo nhóm '" + groupName + "' với " + selectedMembers.size() + " thành viên");
-            showInfo("Thành công", "Nhóm '" + groupName + "' đã được tạo!");
+            appendMessage(">>> Đang tạo nhóm '" + groupName + "'...");
         }
     }
 
@@ -256,6 +246,8 @@ public class ChatClientController {
         ListView<String> memberListView = new ListView<>();
         memberListView.setPrefHeight(150);
 
+        Label lblCreator = new Label("");
+
         Button btnAddMember = new Button("Thêm thành viên");
         Button btnRemoveMember = new Button("Xóa thành viên");
         Button btnDeleteGroup = new Button("Xóa nhóm");
@@ -266,15 +258,25 @@ public class ChatClientController {
 
         groupListView.getSelectionModel().selectedItemProperty().addListener((obs, oldVal, newVal) -> {
             if (newVal != null) {
+                GroupData group = myGroups.get(newVal);
                 memberListView.getItems().clear();
-                memberListView.getItems().addAll(myGroups.get(newVal));
-                btnAddMember.setDisable(false);
-                btnDeleteGroup.setDisable(false);
+                memberListView.getItems().addAll(group.members);
+                lblCreator.setText("Người tạo: " + group.creator);
+
+                // Chỉ người tạo mới có quyền quản lý
+                boolean isCreator = group.creator.equals(username);
+                btnAddMember.setDisable(!isCreator);
+                btnDeleteGroup.setDisable(!isCreator);
             }
         });
 
         memberListView.getSelectionModel().selectedItemProperty().addListener((obs, oldVal, newVal) -> {
-            btnRemoveMember.setDisable(newVal == null);
+            String selectedGroup = groupListView.getSelectionModel().getSelectedItem();
+            if (selectedGroup != null) {
+                GroupData group = myGroups.get(selectedGroup);
+                boolean isCreator = group.creator.equals(username);
+                btnRemoveMember.setDisable(newVal == null || !isCreator);
+            }
         });
 
         btnAddMember.setOnAction(e -> {
@@ -288,9 +290,9 @@ public class ChatClientController {
             String selectedGroup = groupListView.getSelectionModel().getSelectedItem();
             String selectedMember = memberListView.getSelectionModel().getSelectedItem();
             if (selectedGroup != null && selectedMember != null) {
-                myGroups.get(selectedGroup).remove(selectedMember);
-                memberListView.getItems().remove(selectedMember);
-                appendMessage(">>> Đã xóa " + selectedMember + " khỏi nhóm " + selectedGroup);
+                // Gửi yêu cầu xóa thành viên đến server
+                writer.println("REMOVE_MEMBER:" + selectedGroup + ":" + selectedMember);
+                appendMessage(">>> Đang xóa " + selectedMember + " khỏi nhóm " + selectedGroup + "...");
             }
         });
 
@@ -300,27 +302,21 @@ public class ChatClientController {
                 Alert confirm = new Alert(Alert.AlertType.CONFIRMATION);
                 confirm.setTitle("Xác nhận");
                 confirm.setHeaderText("Xóa nhóm " + selectedGroup + "?");
-                confirm.setContentText("Bạn có chắc chắn muốn xóa nhóm này?");
+                confirm.setContentText("Bạn có chắc chắn muốn xóa nhóm này? Tất cả thành viên sẽ bị xóa khỏi nhóm.");
 
                 Optional<ButtonType> confirmResult = confirm.showAndWait();
                 if (confirmResult.isPresent() && confirmResult.get() == ButtonType.OK) {
-                    myGroups.remove(selectedGroup);
-                    groupListView.getItems().remove(selectedGroup);
-                    memberListView.getItems().clear();
-                    updateGroupList();
-
-                    if (selectedGroup.equals(currentGroup)) {
-                        currentGroup = null;
-                        lblCurrentChat.setText("Chế độ: Chat nhóm (chọn hoặc tạo nhóm)");
-                    }
-
-                    appendMessage(">>> Đã xóa nhóm " + selectedGroup);
+                    // Gửi yêu cầu xóa nhóm đến server
+                    writer.println("DELETE_GROUP:" + selectedGroup);
+                    appendMessage(">>> Đang xóa nhóm " + selectedGroup + "...");
+                    dialog.close();
                 }
             }
         });
 
         grid.add(new Label("Danh sách nhóm:"), 0, 0);
         grid.add(groupListView, 0, 1);
+        grid.add(lblCreator, 0, 2);
         grid.add(new Label("Thành viên:"), 1, 0);
         grid.add(memberListView, 1, 1);
 
@@ -336,9 +332,12 @@ public class ChatClientController {
     }
 
     private void addMemberToGroup(String groupName, ListView<String> memberListView) {
+        GroupData group = myGroups.get(groupName);
+        if (group == null) return;
+
         List<String> availableUsers = new ArrayList<>();
         for (String user : listOnlineUsers.getItems()) {
-            if (!user.equals(username) && !myGroups.get(groupName).contains(user)) {
+            if (!user.equals(username) && !group.members.contains(user)) {
                 availableUsers.add(user);
             }
         }
@@ -355,9 +354,9 @@ public class ChatClientController {
 
         Optional<String> result = dialog.showAndWait();
         result.ifPresent(user -> {
-            myGroups.get(groupName).add(user);
-            memberListView.getItems().add(user);
-            appendMessage(">>> Đã thêm " + user + " vào nhóm " + groupName);
+            // Gửi yêu cầu thêm thành viên đến server
+            writer.println("ADD_MEMBER:" + groupName + ":" + user);
+            appendMessage(">>> Đang thêm " + user + " vào nhóm " + groupName + "...");
         });
     }
 
@@ -369,10 +368,10 @@ public class ChatClientController {
                 rbGroup.setSelected(true);
                 handleGroupMode();
 
-                List<String> members = myGroups.get(currentGroup);
-                lblGroupInfo.setText("Nhóm: " + currentGroup + " (" + members.size() + " thành viên)");
+                GroupData group = myGroups.get(currentGroup);
+                lblGroupInfo.setText("Nhóm: " + currentGroup + " (" + group.members.size() + " thành viên) - Tạo bởi: " + group.creator);
                 appendMessage(">>> Đã chọn nhóm: " + currentGroup);
-                appendMessage(">>> Thành viên: " + String.join(", ", members));
+                appendMessage(">>> Thành viên: " + String.join(", ", group.members));
             }
         }
     }
@@ -455,8 +454,9 @@ public class ChatClientController {
                 case "GROUP":
                     String members;
                     if (currentGroup != null && myGroups.containsKey(currentGroup)) {
-                        // Sử dụng nhóm đã lưu
-                        members = String.join(",", myGroups.get(currentGroup));
+                        // Sử dụng nhóm đã lưu trên server
+                        GroupData group = myGroups.get(currentGroup);
+                        members = String.join(",", group.members);
                         writer.println("GROUP:" + members + ":" + message);
                         appendMessage("[Bạn -> Nhóm " + currentGroup + "]: " + message);
                     } else {
@@ -488,6 +488,111 @@ public class ChatClientController {
                 if (message.startsWith("USERS:")) {
                     String[] users = message.substring(6).split(",");
                     Platform.runLater(() -> updateUserList(users));
+
+                } else if (message.startsWith("GROUPS:")) {
+                    // Nhận danh sách nhóm từ server
+                    Platform.runLater(() -> parseGroupList(finalMessage));
+
+                } else if (message.startsWith("GROUP_CREATED:")) {
+                    // Nhóm được tạo thành công
+                    String[] parts = finalMessage.split(":", 3);
+                    if (parts.length >= 3) {
+                        String groupName = parts[1];
+                        String members = parts[2];
+                        Platform.runLater(() -> {
+                            GroupData group = new GroupData(username, members);
+                            myGroups.put(groupName, group);
+                            updateGroupList();
+                            appendMessage(">>> ✓ Nhóm '" + groupName + "' đã được tạo thành công!");
+                            showInfo("Thành công", "Nhóm '" + groupName + "' đã được tạo!");
+                        });
+                    }
+
+                } else if (message.startsWith("GROUP_ADDED:")) {
+                    // Được thêm vào nhóm mới
+                    String[] parts = finalMessage.split(":", 4);
+                    if (parts.length >= 4) {
+                        String groupName = parts[1];
+                        String members = parts[2];
+                        String creator = parts[3];
+                        Platform.runLater(() -> {
+                            GroupData group = new GroupData(creator, members);
+                            myGroups.put(groupName, group);
+                            updateGroupList();
+                            appendMessage(">>> ✓ Bạn đã được thêm vào nhóm '" + groupName + "' bởi " + creator);
+                        });
+                    }
+
+                } else if (message.startsWith("GROUP_DELETED:")) {
+                    // Nhóm bị xóa
+                    String groupName = finalMessage.substring(14);
+                    Platform.runLater(() -> {
+                        myGroups.remove(groupName);
+                        updateGroupList();
+                        if (groupName.equals(currentGroup)) {
+                            currentGroup = null;
+                            lblCurrentChat.setText("Chế độ: Chat nhóm (chọn hoặc tạo nhóm)");
+                            lblGroupInfo.setText("");
+                        }
+                        appendMessage(">>> Nhóm '" + groupName + "' đã bị xóa");
+                    });
+
+                } else if (message.startsWith("GROUP_REMOVED:")) {
+                    // Bị xóa khỏi nhóm
+                    String groupName = finalMessage.substring(14);
+                    Platform.runLater(() -> {
+                        myGroups.remove(groupName);
+                        updateGroupList();
+                        if (groupName.equals(currentGroup)) {
+                            currentGroup = null;
+                            lblCurrentChat.setText("Chế độ: Chat nhóm (chọn hoặc tạo nhóm)");
+                            lblGroupInfo.setText("");
+                        }
+                        appendMessage(">>> Bạn đã bị xóa khỏi nhóm '" + groupName + "'");
+                    });
+
+                } else if (message.startsWith("GROUP_UPDATE:")) {
+                    // Cập nhật thành viên nhóm
+                    String[] parts = finalMessage.split(":", 3);
+                    if (parts.length >= 3) {
+                        String groupName = parts[1];
+                        String members = parts[2];
+                        Platform.runLater(() -> {
+                            GroupData group = myGroups.get(groupName);
+                            if (group != null) {
+                                group.updateMembers(members);
+                                appendMessage(">>> Nhóm '" + groupName + "' đã được cập nhật");
+                            }
+                        });
+                    }
+
+                } else if (message.startsWith("MEMBER_ADDED:")) {
+                    String[] parts = finalMessage.split(":", 3);
+                    if (parts.length >= 3) {
+                        String groupName = parts[1];
+                        String newMember = parts[2];
+                        Platform.runLater(() -> {
+                            appendMessage(">>> ✓ Đã thêm " + newMember + " vào nhóm " + groupName);
+                        });
+                    }
+
+                } else if (message.startsWith("MEMBER_REMOVED:")) {
+                    String[] parts = finalMessage.split(":", 3);
+                    if (parts.length >= 3) {
+                        String groupName = parts[1];
+                        String removedMember = parts[2];
+                        Platform.runLater(() -> {
+                            appendMessage(">>> ✓ Đã xóa " + removedMember + " khỏi nhóm " + groupName);
+                        });
+                    }
+
+                } else if (message.startsWith("GROUP_ERROR:")) {
+                    String error = finalMessage.substring(12);
+                    Platform.runLater(() -> {
+                        appendMessage(">>> Lỗi: " + error);
+                        showAlert("Lỗi", error);
+                    });
+
                 } else {
                     Platform.runLater(() -> appendMessage(finalMessage));
                 }
@@ -500,6 +605,31 @@ public class ChatClientController {
                 });
             }
         }
+    }
+
+    private void parseGroupList(String message) {
+        // Format: GROUPS:groupName1:members1;groupName2:members2;...
+        String data = message.substring(7);
+        if (data.isEmpty()) return;
+
+        String[] groupEntries = data.split(";");
+        for (String entry : groupEntries) {
+            if (entry.trim().isEmpty()) continue;
+
+            String[] parts = entry.split(":", 2);
+            if (parts.length >= 2) {
+                String groupName = parts[0];
+                String members = parts[1];
+
+                // Xác định creator (giả sử creator là người đầu tiên trong danh sách hoặc có thể lấy từ server)
+                String[] memberArray = members.split(",");
+                String creator = memberArray.length > 0 ? memberArray[0] : username;
+
+                GroupData group = new GroupData(creator, members);
+                myGroups.put(groupName, group);
+            }
+        }
+        updateGroupList();
     }
 
     private void updateUserList(String[] users) {
@@ -535,5 +665,38 @@ public class ChatClientController {
         alert.setHeaderText(null);
         alert.setContentText(content);
         alert.showAndWait();
+    }
+
+    // Class lưu trữ thông tin nhóm
+    private static class GroupData {
+        String creator;
+        List<String> members;
+
+        public GroupData(String creator, String membersStr) {
+            this.creator = creator;
+            this.members = new ArrayList<>();
+            if (membersStr != null && !membersStr.isEmpty()) {
+                String[] memberArray = membersStr.split(",");
+                for (String member : memberArray) {
+                    String trimmed = member.trim();
+                    if (!trimmed.isEmpty()) {
+                        members.add(trimmed);
+                    }
+                }
+            }
+        }
+
+        public void updateMembers(String membersStr) {
+            members.clear();
+            if (membersStr != null && !membersStr.isEmpty()) {
+                String[] memberArray = membersStr.split(",");
+                for (String member : memberArray) {
+                    String trimmed = member.trim();
+                    if (!trimmed.isEmpty()) {
+                        members.add(trimmed);
+                    }
+                }
+            }
+        }
     }
 }

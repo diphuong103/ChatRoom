@@ -5,393 +5,552 @@ import javafx.fxml.FXMLLoader;
 import javafx.scene.Parent;
 import javafx.scene.Scene;
 import javafx.stage.Stage;
+
 import java.io.*;
-import java.net.*;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.util.*;
-import java.util.concurrent.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class ChatServerGUI extends Application {
 
     private static ServerSocket serverSocket;
-    private static Map<String, ClientHandlerGUI> clientHandlers = new ConcurrentHashMap<>();
-    private static Map<String, String> userDatabase = new ConcurrentHashMap<>();
-    private static int totalConnections = 0;
+    private static List<ClientHandler> clients = Collections.synchronizedList(new ArrayList<>());
+    private static Map<String, ClientHandler> onlineUsers = new ConcurrentHashMap<>();
     private static boolean isRunning = false;
 
+    // Lưu trữ nhóm: tên nhóm -> GroupInfo
+    private static Map<String, GroupInfo> groups = new ConcurrentHashMap<>();
+
+    public static void main(String[] args) {
+        launch(args);
+    }
+
     @Override
-    public void start(Stage primaryStage) {
-        try {
-            FXMLLoader loader = new FXMLLoader(getClass().getResource("ServerGUIView.fxml"));
-            Parent root = loader.load();
+    public void start(Stage primaryStage) throws Exception {
+        FXMLLoader loader = new FXMLLoader(getClass().getResource("ServerGUIView.fxml"));
+        Parent root = loader.load();
 
-            Scene scene = new Scene(root);
-            primaryStage.setTitle("Chat Server - Management Console");
-            primaryStage.setScene(scene);
-            primaryStage.setOnCloseRequest(e -> {
-                stopServer();
-                System.exit(0);
-            });
-            primaryStage.show();
-
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        primaryStage.setTitle("Chat Server Manager");
+        primaryStage.setScene(new Scene(root));
+        primaryStage.setOnCloseRequest(e -> {
+            stopServer();
+            System.exit(0);
+        });
+        primaryStage.show();
     }
 
     public static void startServer(int port) {
-        loadUserDatabase();
-
         try {
             serverSocket = new ServerSocket(port);
             isRunning = true;
-            System.out.println("==============================================");
-            System.out.println("       CHAT SERVER - MULTICAST");
-            System.out.println("==============================================");
-            System.out.println("✓ Server đã khởi động trên port " + port);
-            System.out.println("✓ Đợi client kết nối...\n");
+            System.out.println("✓ Server đang chạy trên port " + port);
 
             while (isRunning) {
                 try {
                     Socket clientSocket = serverSocket.accept();
-                    totalConnections++;
-                    System.out.println(">>> Client #" + totalConnections + " kết nối từ: " +
-                            clientSocket.getInetAddress().getHostAddress());
-
-                    Thread thread = new Thread(() -> handleClient(clientSocket, totalConnections));
-                    thread.start();
-
+                    ClientHandler clientHandler = new ClientHandler(clientSocket);
+                    new Thread(clientHandler).start();
                 } catch (IOException e) {
                     if (isRunning) {
-                        System.err.println("Lỗi chấp nhận kết nối: " + e.getMessage());
+                        System.err.println("Lỗi kết nối client: " + e.getMessage());
                     }
                 }
             }
-
         } catch (IOException e) {
-            System.err.println("Không thể khởi động server: " + e.getMessage());
-            e.printStackTrace();
+            System.err.println("Lỗi khởi động server: " + e.getMessage());
         }
     }
 
     public static void stopServer() {
         isRunning = false;
         try {
-            // Đóng tất cả kết nối client
-            for (ClientHandlerGUI handler : clientHandlers.values()) {
-                handler.closeConnection();
-            }
-            clientHandlers.clear();
-
-            // Đóng ServerSocket
             if (serverSocket != null && !serverSocket.isClosed()) {
                 serverSocket.close();
             }
-
-            System.out.println("\n>>> Server đã dừng");
-
+            synchronized (clients) {
+                for (ClientHandler client : clients) {
+                    client.disconnect();
+                }
+                clients.clear();
+            }
+            onlineUsers.clear();
+            groups.clear();
         } catch (IOException e) {
-            System.err.println("Lỗi khi dừng server: " + e.getMessage());
+            System.err.println("Lỗi khi đóng server: " + e.getMessage());
         }
     }
 
-    private static void handleClient(Socket clientSocket, int clientId) {
-        try {
-            BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
-            PrintWriter writer = new PrintWriter(clientSocket.getOutputStream(), true);
-
-            // Nhận loại yêu cầu (REGISTER hoặc LOGIN)
-            String requestType = reader.readLine();
-
-            if ("REGISTER".equals(requestType)) {
-                handleRegister(reader, writer, clientSocket);
-            } else if ("LOGIN".equals(requestType)) {
-                handleLogin(reader, writer, clientSocket, clientId);
-            }
-
-        } catch (IOException e) {
-            System.err.println("Lỗi xử lý client: " + e.getMessage());
-        }
+    public static List<String> getOnlineUsers() {
+        return new ArrayList<>(onlineUsers.keySet());
     }
 
-    private static void handleRegister(BufferedReader reader, PrintWriter writer, Socket socket) {
-        try {
-            String username = reader.readLine();
-            String hashedPassword = reader.readLine();
-
-            if (userDatabase.containsKey(username)) {
-                writer.println("REGISTER_FAILED");
-                System.out.println(">>> Đăng ký thất bại: " + username + " (đã tồn tại)");
-            } else {
-                userDatabase.put(username, hashedPassword);
-                saveUserDatabase();
-                writer.println("REGISTER_SUCCESS");
-                System.out.println("✓ Đăng ký thành công: " + username);
-            }
-            socket.close();
-
-        } catch (IOException e) {
-            System.err.println("Lỗi xử lý đăng ký: " + e.getMessage());
-        }
+    public static int getTotalConnections() {
+        return clients.size();
     }
 
-    private static void handleLogin(BufferedReader reader, PrintWriter writer, Socket socket, int clientId) {
-        try {
-            String username = reader.readLine();
-            String hashedPassword = reader.readLine();
-
-            // Kiểm tra user có tồn tại không
-            if (!userDatabase.containsKey(username)) {
-                writer.println("LOGIN_FAILED");
-                System.out.println(">>> Đăng nhập thất bại: " + username + " (không tồn tại)");
-                socket.close();
-                return;
-            }
-
-            // Kiểm tra mật khẩu
-            if (!userDatabase.get(username).equals(hashedPassword)) {
-                writer.println("LOGIN_FAILED");
-                System.out.println(">>> Đăng nhập thất bại: " + username + " (sai mật khẩu)");
-                socket.close();
-                return;
-            }
-
-            // Kiểm tra user đã online chưa
-            if (clientHandlers.containsKey(username)) {
-                writer.println("USER_ALREADY_ONLINE");
-                System.out.println(">>> Đăng nhập thất bại: " + username + " (đã online)");
-                socket.close();
-                return;
-            }
-
-            // Đăng nhập thành công
-            writer.println("LOGIN_SUCCESS");
-            System.out.println("✓ Đăng nhập thành công: " + username);
-
-            // Tạo ClientHandler và bắt đầu xử lý
-            ClientHandlerGUI clientHandler = new ClientHandlerGUI(socket, username, clientId, reader, writer);
-            clientHandlers.put(username, clientHandler);
-
-            Thread thread = new Thread(clientHandler);
-            thread.start();
-
-        } catch (IOException e) {
-            System.err.println("Lỗi xử lý đăng nhập: " + e.getMessage());
-        }
-    }
-
-    // Gửi tin nhắn broadcast đến tất cả clients
-    public static void broadcastMessage(String message) {
-        System.out.println("[BROADCAST] " + message);
-        for (ClientHandlerGUI client : clientHandlers.values()) {
-            client.sendMessage(message);
-        }
-    }
-
-    // Gửi tin nhắn riêng tư
-    public static void sendPrivateMessage(String fromUser, String toUser, String message) {
-        ClientHandlerGUI recipient = clientHandlers.get(toUser);
-        ClientHandlerGUI sender = clientHandlers.get(fromUser);
-
-        if (recipient != null) {
-            recipient.sendMessage("[" + fromUser + " -> Bạn (riêng)]: " + message);
-            System.out.println("[PRIVATE] " + fromUser + " -> " + toUser + ": " + message);
-        } else if (sender != null) {
-            sender.sendMessage(">>> Lỗi: Người dùng " + toUser + " không online!");
-        }
-    }
-
-    // Gửi tin nhắn nhóm
-    public static void sendGroupMessage(String fromUser, String[] members, String message) {
-        System.out.println("[GROUP] " + fromUser + " -> [" + String.join(",", members) + "]: " + message);
-
-        ClientHandlerGUI sender = clientHandlers.get(fromUser);
-        int sentCount = 0;
-
-        for (String member : members) {
-            member = member.trim();
-            if (!member.equals(fromUser)) {
-                ClientHandlerGUI recipient = clientHandlers.get(member);
-                if (recipient != null) {
-                    recipient.sendMessage("[" + fromUser + " -> Nhóm]: " + message);
-                    sentCount++;
+    private static void broadcastMessage(String message, ClientHandler excludeClient) {
+        synchronized (clients) {
+            for (ClientHandler client : clients) {
+                if (client != excludeClient && client.isLoggedIn()) {
+                    client.sendMessage(message);
                 }
             }
         }
+    }
 
-        if (sender != null && sentCount == 0) {
-            sender.sendMessage(">>> Lỗi: Không có thành viên nào trong nhóm online!");
+    private static void broadcastUserList() {
+        String userList = "USERS:" + String.join(",", onlineUsers.keySet());
+        synchronized (clients) {
+            for (ClientHandler client : clients) {
+                if (client.isLoggedIn()) {
+                    client.sendMessage(userList);
+                }
+            }
         }
     }
 
-    // Gửi danh sách user online
-    public static void broadcastUserList() {
-        StringBuilder userList = new StringBuilder("USERS:");
-        for (String username : clientHandlers.keySet()) {
-            userList.append(username).append(",");
+    private static void broadcastGroupList(String username) {
+        // Gửi danh sách nhóm mà user này là thành viên
+        StringBuilder groupList = new StringBuilder("GROUPS:");
+
+        for (Map.Entry<String, GroupInfo> entry : groups.entrySet()) {
+            GroupInfo group = entry.getValue();
+            if (group.isMember(username)) {
+                groupList.append(entry.getKey()).append(":").append(group.getMembersString()).append(";");
+            }
         }
 
-        String message = userList.toString();
-        if (message.endsWith(",")) {
-            message = message.substring(0, message.length() - 1);
-        }
-
-        for (ClientHandlerGUI client : clientHandlers.values()) {
-            client.sendMessage(message);
+        ClientHandler client = onlineUsers.get(username);
+        if (client != null) {
+            client.sendMessage(groupList.toString());
         }
     }
 
-    // Xóa client khi ngắt kết nối
-    public static void removeClient(String username) {
-        clientHandlers.remove(username);
-        System.out.println("<<< " + username + " đã ngắt kết nối");
-        System.out.println("Số client online: " + clientHandlers.size() + "\n");
+    private static void broadcastGroupUpdate(String groupName) {
+        GroupInfo group = groups.get(groupName);
+        if (group == null) return;
 
-        broadcastMessage("*** " + username + " đã rời khỏi phòng chat");
-        broadcastUserList();
+        String groupUpdate = "GROUP_UPDATE:" + groupName + ":" + group.getMembersString();
+
+        // Gửi đến tất cả thành viên trong nhóm
+        for (String member : group.getMembers()) {
+            ClientHandler client = onlineUsers.get(member);
+            if (client != null) {
+                client.sendMessage(groupUpdate);
+            }
+        }
     }
 
-    // Lấy danh sách user online
-    public static Set<String> getOnlineUsers() {
-        return clientHandlers.keySet();
+    // Class lưu thông tin nhóm
+    static class GroupInfo {
+        private String creator;
+        private Set<String> members;
+        private long createdTime;
+
+        public GroupInfo(String creator, Set<String> members) {
+            this.creator = creator;
+            this.members = new HashSet<>(members);
+            this.createdTime = System.currentTimeMillis();
+        }
+
+        public boolean isMember(String username) {
+            return members.contains(username) || creator.equals(username);
+        }
+
+        public Set<String> getMembers() {
+            return new HashSet<>(members);
+        }
+
+        public String getMembersString() {
+            return String.join(",", members);
+        }
+
+        public void addMember(String username) {
+            members.add(username);
+        }
+
+        public void removeMember(String username) {
+            members.remove(username);
+        }
+
+        public String getCreator() {
+            return creator;
+        }
     }
 
-    // Lấy tổng số kết nối
-    public static int getTotalConnections() {
-        return totalConnections;
-    }
+    // ClientHandler class
+    static class ClientHandler implements Runnable {
+        private Socket socket;
+        private BufferedReader reader;
+        private PrintWriter writer;
+        private String username;
+        private boolean isLoggedIn = false;
 
-    // Load database từ file
-    private static void loadUserDatabase() {
-        try {
-            File file = new File("users.dat");
-            if (file.exists()) {
-                BufferedReader br = new BufferedReader(new FileReader(file));
-                String line;
-                while ((line = br.readLine()) != null) {
-                    String[] parts = line.split(":");
-                    if (parts.length == 2) {
-                        userDatabase.put(parts[0], parts[1]);
+        public ClientHandler(Socket socket) {
+            this.socket = socket;
+            try {
+                reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                writer = new PrintWriter(socket.getOutputStream(), true);
+                clients.add(this);
+            } catch (IOException e) {
+                System.err.println("Lỗi khởi tạo ClientHandler: " + e.getMessage());
+            }
+        }
+
+        @Override
+        public void run() {
+            try {
+                handleAuthentication();
+
+                if (isLoggedIn) {
+                    String message;
+                    while ((message = reader.readLine()) != null) {
+                        if (message.equals("/quit")) {
+                            break;
+                        }
+                        handleMessage(message);
                     }
                 }
-                br.close();
-                System.out.println("✓ Đã load " + userDatabase.size() + " tài khoản từ database");
+            } catch (IOException e) {
+                System.out.println("Client " + username + " ngắt kết nối");
+            } finally {
+                disconnect();
+            }
+        }
+
+        private void handleAuthentication() throws IOException {
+            String action = reader.readLine();
+            String username = reader.readLine();
+            String password = reader.readLine();
+
+            if ("REGISTER".equals(action)) {
+                handleRegister(username, password);
+            } else if ("LOGIN".equals(action)) {
+                handleLogin(username, password);
+            }
+        }
+
+        private void handleRegister(String username, String password) {
+            File userFile = new File("users/" + username + ".txt");
+
+            if (userFile.exists()) {
+                writer.println("REGISTER_FAILED");
+                System.out.println("Đăng ký thất bại: " + username + " (đã tồn tại)");
             } else {
-                System.out.println("✓ Tạo database mới");
+                try {
+                    new File("users").mkdirs();
+                    FileWriter fw = new FileWriter(userFile);
+                    fw.write(password);
+                    fw.close();
+                    writer.println("REGISTER_SUCCESS");
+                    System.out.println("✓ Đăng ký thành công: " + username);
+                } catch (IOException e) {
+                    writer.println("REGISTER_FAILED");
+                    System.err.println("Lỗi đăng ký: " + e.getMessage());
+                }
             }
-        } catch (IOException e) {
-            System.err.println("Lỗi load database: " + e.getMessage());
         }
-    }
 
-    // Lưu database vào file
-    private static void saveUserDatabase() {
-        try {
-            PrintWriter pw = new PrintWriter(new FileWriter("users.dat"));
-            for (Map.Entry<String, String> entry : userDatabase.entrySet()) {
-                pw.println(entry.getKey() + ":" + entry.getValue());
+        private void handleLogin(String username, String password) {
+            if (onlineUsers.containsKey(username)) {
+                writer.println("USER_ALREADY_ONLINE");
+                System.out.println("Đăng nhập thất bại: " + username + " (đã online)");
+                return;
             }
-            pw.close();
-        } catch (IOException e) {
-            System.err.println("Lỗi save database: " + e.getMessage());
+
+            File userFile = new File("users/" + username + ".txt");
+
+            if (!userFile.exists()) {
+                writer.println("LOGIN_FAILED");
+                System.out.println("Đăng nhập thất bại: " + username + " (không tồn tại)");
+                return;
+            }
+
+            try {
+                BufferedReader fileReader = new BufferedReader(new FileReader(userFile));
+                String storedPassword = fileReader.readLine();
+                fileReader.close();
+
+                if (password.equals(storedPassword)) {
+                    this.username = username;
+                    this.isLoggedIn = true;
+                    onlineUsers.put(username, this);
+
+                    writer.println("LOGIN_SUCCESS");
+                    System.out.println("✓ " + username + " đã đăng nhập");
+
+                    broadcastMessage(">>> " + username + " đã tham gia phòng chat!", this);
+                    broadcastUserList();
+
+                    // Gửi danh sách nhóm cho user vừa đăng nhập
+                    broadcastGroupList(username);
+                } else {
+                    writer.println("LOGIN_FAILED");
+                    System.out.println("Đăng nhập thất bại: " + username + " (sai mật khẩu)");
+                }
+            } catch (IOException e) {
+                writer.println("LOGIN_FAILED");
+                System.err.println("Lỗi đọc file: " + e.getMessage());
+            }
         }
-    }
 
-    public static void main(String[] args) {
-        launch(args);
-    }
-}
+        private void handleMessage(String message) {
+            String[] parts = message.split(":", 3);
 
-// Class xử lý từng client
-class ClientHandlerGUI implements Runnable {
-    private Socket socket;
-    private BufferedReader reader;
-    private PrintWriter writer;
-    private String username;
-    private int clientId;
+            if (parts.length < 2) {
+                return;
+            }
 
-    public ClientHandlerGUI(Socket socket, String username, int clientId,
-                            BufferedReader reader, PrintWriter writer) {
-        this.socket = socket;
-        this.username = username;
-        this.clientId = clientId;
-        this.reader = reader;
-        this.writer = writer;
-    }
+            String messageType = parts[0];
 
-    @Override
-    public void run() {
-        try {
-            System.out.println("✓ Client #" + clientId + " (" + username + ") đã sẵn sàng");
-            System.out.println("Số client online: " + ChatServerGUI.getOnlineUsers().size() + "\n");
-
-            // Thông báo user mới vào phòng
-            ChatServerGUI.broadcastMessage("*** " + username + " đã vào phòng chat");
-            ChatServerGUI.broadcastUserList();
-
-            // Nhận và xử lý tin nhắn
-            String message;
-            while ((message = reader.readLine()) != null) {
-                if (message.equals("/quit")) {
+            switch (messageType) {
+                case "PUBLIC":
+                    if (parts.length >= 2) {
+                        String content = parts[1];
+                        broadcastMessage("[" + username + "]: " + content, null);
+                        System.out.println("PUBLIC [" + username + "]: " + content);
+                    }
                     break;
-                }
-                processMessage(message);
+
+                case "PRIVATE":
+                    if (parts.length >= 3) {
+                        String targetUser = parts[1];
+                        String content = parts[2];
+                        sendPrivateMessage(targetUser, content);
+                    }
+                    break;
+
+                case "GROUP":
+                    if (parts.length >= 3) {
+                        String members = parts[1];
+                        String content = parts[2];
+                        sendGroupMessage(members, content);
+                    }
+                    break;
+
+                case "CREATE_GROUP":
+                    if (parts.length >= 3) {
+                        String groupName = parts[1];
+                        String members = parts[2];
+                        handleCreateGroup(groupName, members);
+                    }
+                    break;
+
+                case "DELETE_GROUP":
+                    if (parts.length >= 2) {
+                        String groupName = parts[1];
+                        handleDeleteGroup(groupName);
+                    }
+                    break;
+
+                case "ADD_MEMBER":
+                    if (parts.length >= 3) {
+                        String groupName = parts[1];
+                        String newMember = parts[2];
+                        handleAddMember(groupName, newMember);
+                    }
+                    break;
+
+                case "REMOVE_MEMBER":
+                    if (parts.length >= 3) {
+                        String groupName = parts[1];
+                        String memberToRemove = parts[2];
+                        handleRemoveMember(groupName, memberToRemove);
+                    }
+                    break;
+            }
+        }
+
+        private void handleCreateGroup(String groupName, String membersStr) {
+            if (groups.containsKey(groupName)) {
+                writer.println("GROUP_ERROR:Tên nhóm đã tồn tại");
+                return;
             }
 
-        } catch (IOException e) {
-            System.err.println("Lỗi với client " + username + ": " + e.getMessage());
-        } finally {
-            closeConnection();
-            ChatServerGUI.removeClient(username);
-        }
-    }
+            String[] memberArray = membersStr.split(",");
+            Set<String> members = new HashSet<>();
 
-    // Xử lý các loại tin nhắn
-    private void processMessage(String message) {
-        try {
-            if (message.startsWith("PUBLIC:")) {
-                // Chat công khai
-                String content = message.substring(7);
-                String formattedMessage = "[" + username + "]: " + content;
-                ChatServerGUI.broadcastMessage(formattedMessage);
-
-            } else if (message.startsWith("PRIVATE:")) {
-                // Chat riêng tư
-                String[] parts = message.substring(8).split(":", 2);
-                if (parts.length == 2) {
-                    String toUser = parts[0];
-                    String content = parts[1];
-                    ChatServerGUI.sendPrivateMessage(username, toUser, content);
-                }
-
-            } else if (message.startsWith("GROUP:")) {
-                // Chat nhóm
-                String[] parts = message.substring(6).split(":", 2);
-                if (parts.length == 2) {
-                    String[] members = parts[0].split(",");
-                    String content = parts[1];
-                    ChatServerGUI.sendGroupMessage(username, members, content);
+            for (String member : memberArray) {
+                String trimmed = member.trim();
+                if (!trimmed.isEmpty() && !trimmed.equals(username)) {
+                    members.add(trimmed);
                 }
             }
-        } catch (Exception e) {
-            System.err.println("Lỗi xử lý tin nhắn từ " + username + ": " + e.getMessage());
-        }
-    }
 
-    // Gửi tin nhắn đến client này
-    public void sendMessage(String message) {
-        if (writer != null) {
-            writer.println(message);
-        }
-    }
+            if (members.isEmpty()) {
+                writer.println("GROUP_ERROR:Nhóm phải có ít nhất 1 thành viên");
+                return;
+            }
 
-    // Đóng kết nối
-    public void closeConnection() {
-        try {
-            if (reader != null) reader.close();
-            if (writer != null) writer.close();
-            if (socket != null) socket.close();
-        } catch (IOException e) {
-            e.printStackTrace();
+            // Tạo nhóm mới
+            GroupInfo group = new GroupInfo(username, members);
+            groups.put(groupName, group);
+
+            writer.println("GROUP_CREATED:" + groupName + ":" + membersStr);
+            System.out.println("✓ Nhóm '" + groupName + "' được tạo bởi " + username);
+
+            // Thông báo cho tất cả thành viên
+            String notification = "GROUP_ADDED:" + groupName + ":" + membersStr + ":" + username;
+            for (String member : members) {
+                ClientHandler client = onlineUsers.get(member);
+                if (client != null) {
+                    client.sendMessage(notification);
+                }
+            }
+
+            broadcastMessage(">>> " + username + " đã tạo nhóm '" + groupName + "'", null);
+        }
+
+        private void handleDeleteGroup(String groupName) {
+            GroupInfo group = groups.get(groupName);
+
+            if (group == null) {
+                writer.println("GROUP_ERROR:Nhóm không tồn tại");
+                return;
+            }
+
+            if (!group.getCreator().equals(username)) {
+                writer.println("GROUP_ERROR:Chỉ người tạo mới có quyền xóa nhóm");
+                return;
+            }
+
+            // Thông báo cho tất cả thành viên
+            String notification = "GROUP_DELETED:" + groupName;
+            for (String member : group.getMembers()) {
+                ClientHandler client = onlineUsers.get(member);
+                if (client != null) {
+                    client.sendMessage(notification);
+                }
+            }
+
+            groups.remove(groupName);
+            writer.println("GROUP_DELETED:" + groupName);
+            System.out.println("✓ Nhóm '" + groupName + "' đã bị xóa bởi " + username);
+
+            broadcastMessage(">>> " + username + " đã xóa nhóm '" + groupName + "'", null);
+        }
+
+        private void handleAddMember(String groupName, String newMember) {
+            GroupInfo group = groups.get(groupName);
+
+            if (group == null) {
+                writer.println("GROUP_ERROR:Nhóm không tồn tại");
+                return;
+            }
+
+            if (!group.getCreator().equals(username)) {
+                writer.println("GROUP_ERROR:Chỉ người tạo mới có quyền thêm thành viên");
+                return;
+            }
+
+            if (group.isMember(newMember)) {
+                writer.println("GROUP_ERROR:Thành viên đã có trong nhóm");
+                return;
+            }
+
+            group.addMember(newMember);
+
+            // Thông báo cho thành viên mới
+            ClientHandler newClient = onlineUsers.get(newMember);
+            if (newClient != null) {
+                String notification = "GROUP_ADDED:" + groupName + ":" + group.getMembersString() + ":" + username;
+                newClient.sendMessage(notification);
+            }
+
+            // Cập nhật cho các thành viên hiện tại
+            broadcastGroupUpdate(groupName);
+
+            writer.println("MEMBER_ADDED:" + groupName + ":" + newMember);
+            System.out.println("✓ " + newMember + " được thêm vào nhóm '" + groupName + "'");
+        }
+
+        private void handleRemoveMember(String groupName, String memberToRemove) {
+            GroupInfo group = groups.get(groupName);
+
+            if (group == null) {
+                writer.println("GROUP_ERROR:Nhóm không tồn tại");
+                return;
+            }
+
+            if (!group.getCreator().equals(username)) {
+                writer.println("GROUP_ERROR:Chỉ người tạo mới có quyền xóa thành viên");
+                return;
+            }
+
+            group.removeMember(memberToRemove);
+
+            // Thông báo cho thành viên bị xóa
+            ClientHandler removedClient = onlineUsers.get(memberToRemove);
+            if (removedClient != null) {
+                removedClient.sendMessage("GROUP_REMOVED:" + groupName);
+            }
+
+            // Cập nhật cho các thành viên còn lại
+            broadcastGroupUpdate(groupName);
+
+            writer.println("MEMBER_REMOVED:" + groupName + ":" + memberToRemove);
+            System.out.println("✓ " + memberToRemove + " bị xóa khỏi nhóm '" + groupName + "'");
+        }
+
+        private void sendPrivateMessage(String targetUser, String content) {
+            ClientHandler targetClient = onlineUsers.get(targetUser);
+
+            if (targetClient != null) {
+                targetClient.sendMessage("[" + username + " (riêng)]: " + content);
+                System.out.println("PRIVATE [" + username + " -> " + targetUser + "]: " + content);
+            } else {
+                writer.println(">>> Lỗi: Người dùng " + targetUser + " không online!");
+            }
+        }
+
+        private void sendGroupMessage(String membersStr, String content) {
+            String[] members = membersStr.split(",");
+            String formattedMessage = "[" + username + " -> Nhóm]: " + content;
+
+            for (String memberName : members) {
+                String trimmed = memberName.trim();
+                ClientHandler targetClient = onlineUsers.get(trimmed);
+
+                if (targetClient != null) {
+                    targetClient.sendMessage(formattedMessage);
+                }
+            }
+
+            System.out.println("GROUP [" + username + " -> " + membersStr + "]: " + content);
+        }
+
+        public void sendMessage(String message) {
+            if (writer != null) {
+                writer.println(message);
+            }
+        }
+
+        public String getUsername() {
+            return username;
+        }
+
+        public boolean isLoggedIn() {
+            return isLoggedIn;
+        }
+
+        public void disconnect() {
+            try {
+                if (isLoggedIn && username != null) {
+                    onlineUsers.remove(username);
+                    broadcastMessage(">>> " + username + " đã rời khỏi phòng chat!", null);
+                    broadcastUserList();
+                    System.out.println("✗ " + username + " đã ngắt kết nối");
+                }
+
+                clients.remove(this);
+
+                if (socket != null && !socket.isClosed()) {
+                    socket.close();
+                }
+            } catch (IOException e) {
+                System.err.println("Lỗi khi ngắt kết nối: " + e.getMessage());
+            }
         }
     }
 }
